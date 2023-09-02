@@ -7,7 +7,7 @@ use crate::lineage::*;
 use anyhow::{anyhow, Result};
 use sqlparser::ast::{
     AlterTableOperation, Expr, Function, FunctionArg, FunctionArgExpr, ListAggOnOverflow, Query,
-    Select, SelectItem, SetExpr, Statement, Table, TableFactor, WindowSpec, With,
+    Select, SelectItem, SetExpr, Statement, Table, TableFactor, TableWithJoins, WindowSpec, WindowType, With, TableAlias,
 };
 
 pub trait Visit {
@@ -246,6 +246,7 @@ impl Visit for Expr {
                 expr,
                 substring_from,
                 substring_for,
+                special: _,
             } => {
                 expr.visit(context)?;
                 if let Some(e) = substring_from {
@@ -404,6 +405,27 @@ impl Visit for WindowSpec {
     }
 }
 
+
+impl Visit for WindowType {
+    fn visit(&self, context: &mut Context) -> Result<()> {
+        match self {
+            WindowType::WindowSpec(spec) => spec.visit(context),
+            // WindowType::NamedWindow(name) => name.visit(context),
+            _ => Ok(()),
+        }
+
+    }
+}
+
+
+// impl Visit for Vec<TableWithJoins> {
+//     fn visit(&self, context: &mut Context) -> Result<()> {
+//         for table in &self.iter() {
+//             self.visit(context)
+//         }
+//     }
+// }
+
 impl Visit for Select {
     fn visit(&self, context: &mut Context) -> Result<()> {
         // If we're selecting from a single table, that table becomes the default
@@ -495,6 +517,7 @@ impl Visit for SetExpr {
                 right.visit(context)
             }
             SetExpr::Table(table) => table.visit(context),
+            &SetExpr::Update(_) => todo!(),
         }
     }
 }
@@ -611,21 +634,43 @@ impl Visit for Statement {
                 }
             }
             Statement::Delete {
-                table_name,
+                tables,
                 using,
+                from,
                 selection,
                 ..
             } => {
-                let table_name = get_table_name_from_table_factor(table_name)?;
-                context.add_output(table_name);
+                // let table_name = get_table_name_from_table_factor(table_name)?;
+
+                for f in from {
+                    let name = get_table_name_from_table_factor(&f.relation)?;
+                    context.add_output(name);
+
+                    // f.relation.visit(context)?;
+                    // f.joins.visit(context)?;
+
+                }
 
                 if let Some(using) = using {
-                    using.visit(context)?;
-                }
+                        for u in using {
+                            u.visit(context)?;
+                        }
+                    }
+
+                
 
                 if let Some(expr) = selection {
                     expr.visit(context)?;
                 }
+
+                for table in tables {
+                    let table_name = table.to_string();
+                    context.add_output(table_name);
+
+
+                } 
+
+    
             }
             Statement::Truncate { table_name, .. } => context.add_output(table_name.to_string()),
             Statement::Drop { names, .. } => {
@@ -669,6 +714,19 @@ impl Visit for Table {
         Ok(())
     }
 }
+
+impl Visit for TableWithJoins {
+    fn visit(&self, context: &mut Context) -> Result<()> {
+        self.relation.visit(context)?;
+
+        for join in &self.joins {
+            join.relation.visit(context)?;
+        }
+
+        Ok(())
+    }
+}
+
 
 // --- Utils ---
 
